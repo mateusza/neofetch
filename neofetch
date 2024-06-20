@@ -5226,6 +5226,10 @@ OTHER:
     -v                          Display error messages.
     -vv                         Display a verbose log for error reporting.
 
+SSH:
+    --ssh HOST                  Run neofetch on remote host using SSH. All arguments except
+                                --ssh are passed to remote system. Can be chained to jump.
+
 DEVELOPER:
     --gen-man                   Generate a manpage for Neofetch in your PWD. (Requires GNU help2man)
 
@@ -5430,6 +5434,12 @@ get_args() {
                 help2man -n "A fast, highly customizable system info script" \
                           -N ./neofetch -o neofetch.1
                 exit 1
+            ;;
+
+            "--ssh")
+                ssh_probe="yes"
+                [[ "$ssh_host" == "" ]] && ssh_host="$2"
+                shift
             ;;
 
             "--json")
@@ -11539,6 +11549,49 @@ EOF
     }
 }
 
+ssh_connect(){
+    local new_args next_arg ssh_arg temp_id boundary ssh_err
+
+    ssh_command="ssh"
+    ssh_opts=(-t)
+
+    # filter out first --ssh HOST argument before passing to remote host
+    while [[ "$1" ]]; do
+        if [[ "$ssh_arg" != "yes" && "$1" == "--ssh" ]]; then
+            shift 2
+            ssh_arg="yes"
+            continue
+        fi
+        printf -v next_arg '%q' "$1"
+        new_args+=" $next_arg"
+        shift
+    done
+
+    # generate random filename (45 bits of randomness)
+    printf -v temp_id "%04x" "$RANDOM" "$RANDOM" "$RANDOM"
+    remote_script="/tmp/neofetch-$temp_id.sh"
+    # pipe commands to ssh
+    (
+        boundary="_EOF_${temp_id}_EOF_"
+        # deploy payload
+        printf "%s\n" "cat > $remote_script <<'$boundary'"
+        cat "${BASH_SOURCE[0]}"
+        printf "%s\n" "$boundary"
+        # execute
+        printf "%s %s %s\n" "bash" "$remote_script" "$new_args"
+        # cleanup and exit
+        printf "%s\n" "rm -f $remote_script"
+        printf "exit\n"
+    ) | "$ssh_command" "${ssh_opts[@]}" "$ssh_host" "sh" 2> /dev/null
+    ssh_err="$?"
+    if [[ "$ssh_err" -ne "0" ]]; then
+        printf > /dev/stderr "%s\n" \
+            "SSH connection from $HOSTNAME to $ssh_host failed with exit code: $ssh_err" 
+        exit "$ssh_err"
+    fi
+    exit
+}
+
 main() {
     cache_uname
     get_os
@@ -11548,6 +11601,7 @@ main() {
 
     get_args "$@"
     [[ $verbose != on ]] && exec 2>/dev/null
+    [[ "$ssh_probe" == "yes" ]] && ssh_connect "$@"
     get_simple "$@"
     get_distro
     get_bold
